@@ -180,7 +180,7 @@ class V2RayCore implements VpnCore {
       // do something
     },
   );
-  final List<List<String>> _subscriptionServers = [];
+  final List<List<String>> _servers = [];
   final List<String> _subscriptions = [];
 
   final _connectionStatusSubject = BehaviorSubject<ConnectionStatus>();
@@ -219,19 +219,15 @@ class V2RayCore implements VpnCore {
     _log('V2RayCore initialized');
   }
 
-  void clearSubscriptions() {
-    _subscriptions.clear();
-    _log('All subscriptions cleared');
+  void clearServers() {
+    _servers.clear();
+    _log('All servers cleared');
   }
 
-  void addSubscription({required String subscriptionURL}) {
-    _subscriptions.add(subscriptionURL);
-    _log('Subscription added: $subscriptionURL');
-  }
-
-  void addSubscriptions({required List<String> subscriptionURLs}) {
-    _subscriptions.addAll(subscriptionURLs);
-    _log('Subscriptions added: ${subscriptionURLs.join(", ")}');
+  void addVlessKeyDirect(String vlessKey) {
+    // Add a new server list with a single vless key
+    _servers.add([vlessKey]);
+    _log('Direct vless key added to V2RayCore: $vlessKey');
   }
 
   Future<void> updateSubscription({required int subscriptionIndex}) async {
@@ -270,11 +266,11 @@ class V2RayCore implements VpnCore {
         _log('Parsed NEWLINE subscription: ${servers.length} servers loaded');
       }
 
-      while (_subscriptionServers.length <= subscriptionIndex) {
-        _subscriptionServers.add([]);
+      while (_servers.length <= subscriptionIndex) {
+        _servers.add([]);
       }
 
-      _subscriptionServers[subscriptionIndex] = servers;
+      _servers[subscriptionIndex] = servers;
       _subscriptionLoadedSubject.add(SubscriptionDetails());
 
       _log('Subscription #$subscriptionIndex servers updated successfully');
@@ -291,12 +287,12 @@ class V2RayCore implements VpnCore {
   }) async {
     try {
       if (subscriptionIndex < 0 ||
-          subscriptionIndex >= _subscriptionServers.length) {
+          subscriptionIndex >= _servers.length) {
         _log('Invalid subscription index');
         return;
       }
       if (serverIndex < 0 ||
-          serverIndex >= _subscriptionServers[subscriptionIndex].length) {
+          serverIndex >= _servers[subscriptionIndex].length) {
         _log('Invalid server index');
         return;
       }
@@ -304,7 +300,7 @@ class V2RayCore implements VpnCore {
       await _flutterV2ray.initializeV2Ray();
 
       final serverAddress =
-          _subscriptionServers[subscriptionIndex][serverIndex];
+          _servers[subscriptionIndex][serverIndex];
       V2RayURL parser = FlutterV2ray.parseFromURL(serverAddress);
 
       _connectionStatusSubject.add(ConnectionStatus.connecting);
@@ -347,17 +343,17 @@ class V2RayCore implements VpnCore {
   @override
   void pingServer({required int subscriptionIndex, required int index}) async {
     if (subscriptionIndex < 0 ||
-        subscriptionIndex >= _subscriptionServers.length) {
+        subscriptionIndex >= _servers.length) {
       _log('Invalid subscription index');
       _emitError(ErrorCode.unknownError, 'Invalid subscription index');
       return;
     }
-    if (index < 0 || index >= _subscriptionServers[subscriptionIndex].length) {
+    if (index < 0 || index >= _servers[subscriptionIndex].length) {
       _log('Invalid server index');
       _emitError(ErrorCode.unknownError, 'Invalid server index');
       return;
     }
-    final serverAddress = _subscriptionServers[subscriptionIndex][index];
+    final serverAddress = _servers[subscriptionIndex][index];
     _log('Pinging server: $serverAddress');
     try {
       final ping = Ping(serverAddress, count: 3);
@@ -406,23 +402,27 @@ class V2RayCore implements VpnCore {
 
   @override
   List<Server> getServerList() {
-    return [
+    List<Server> serverList = [];
+    
+    for (int i = 0; i < _servers.length; i++) {
+      for (int j = 0; j < _servers[i].length; j++) {
+        serverList.add(
+          Server(
+            address: _servers[i][j],
+            latency: 0, // No latency data initially
+            location: 'Unknown', // Location unknown
+            isPreferred: false,
+          ),
+        );
+      }
+    }
+    
+    return serverList.isNotEmpty ? serverList : [
+      // Fallback hardcoded list
       Server(
-        address: 'server1.com',
-        latency: 50,
-        location: 'USA',
-        isPreferred: true,
-      ),
-      Server(
-        address: 'server2.com',
-        latency: 100,
-        location: 'UK',
-        isPreferred: false,
-      ),
-      Server(
-        address: 'server3.com',
-        latency: 75,
-        location: 'Canada',
+        address: 'No servers available',
+        latency: 0,
+        location: 'N/A',
         isPreferred: false,
       ),
     ];
@@ -433,10 +433,16 @@ class V2RayCore implements VpnCore {
     required List<String> subscriptionLinks,
   }) async {
     _log('loadSubscriptions: ${subscriptionLinks.join(", ")}');
-    _subscriptions.addAll(subscriptionLinks);
-    _log('Subscriptions added: ${subscriptionLinks.join(", ")}');
-    for (var index = 0; index < subscriptionLinks.length; index++) {
-      await updateSubscription(subscriptionIndex: index);
+    
+    List<String> servers = subscriptionLinks.where((key) => key.trim().isNotEmpty).toList();
+    
+    if (servers.isNotEmpty) {
+      while (_servers.length <= 0) {
+        _servers.add([]);
+      }
+      _servers[0] = servers;
+      _subscriptionLoadedSubject.add(SubscriptionDetails());
+      _log('Direct VLESS keys loaded: ${servers.length}');
     }
   }
 
