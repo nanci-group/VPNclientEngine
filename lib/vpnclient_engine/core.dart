@@ -41,7 +41,6 @@ class Server {
 }
 
 class SubscriptionDetails {
-  // Keeping this class for compatibility but it will be replaced in the future
   final DateTime? expiryDate;
   final int? dataLimit;
   final int? usedData;
@@ -83,15 +82,15 @@ class ProxyConfig {
 }
 
 class PingResult {
-  final int groupIndex;
+  final int subscriptionIndex;
   final int serverIndex;
   final int latencyInMs;
 
   PingResult({
-    required int subscriptionIndex, // Keep parameter name for compatibility
+    required this.subscriptionIndex,
     required this.serverIndex,
     required this.latencyInMs,
-  }) : groupIndex = subscriptionIndex;
+  });
 }
 
 class RoutingRule {
@@ -168,7 +167,7 @@ abstract class VpnCore {
   String getConnectionStatus();
   void setRoutingRules({required List<RoutingRule> rules});
   SessionStatistics getSessionStatistics();
-  Future<void> loadSubscriptions({required List<String> subscriptionLinks}); // To be renamed to loadServers in future
+  Future<void> loadSubscriptions({required List<String> subscriptionLinks});
   void pingServer({required int subscriptionIndex, required int index});
   List<Server> getServerList();
   void setAutoConnect({required bool enable});
@@ -182,6 +181,7 @@ class V2RayCore implements VpnCore {
     },
   );
   final List<List<String>> _servers = [];
+  final List<String> _subscriptions = [];
 
   final _connectionStatusSubject = BehaviorSubject<ConnectionStatus>();
   Stream<ConnectionStatus> get onConnectionStatusChanged =>
@@ -196,9 +196,9 @@ class V2RayCore implements VpnCore {
   final _pingResultSubject = BehaviorSubject<PingResult>();
   Stream<PingResult> get onPingResult => _pingResultSubject.stream;
 
-  final _serversLoadedSubject = BehaviorSubject<SubscriptionDetails>();
+  final _subscriptionLoadedSubject = BehaviorSubject<SubscriptionDetails>();
   Stream<SubscriptionDetails> get onSubscriptionLoaded =>
-      _serversLoadedSubject.stream;
+      _subscriptionLoadedSubject.stream;
 
   final _dataUsageUpdatedSubject = BehaviorSubject<SessionStatistics>();
   Stream<SessionStatistics> get onDataUsageUpdated =>
@@ -230,7 +230,55 @@ class V2RayCore implements VpnCore {
     _log('Direct vless key added to V2RayCore: $vlessKey');
   }
 
-  // Removed updateSubscription method that relied on subscriptions
+  Future<void> updateSubscription({required int subscriptionIndex}) async {
+    if (subscriptionIndex < 0 || subscriptionIndex >= _subscriptions.length) {
+      _log('Invalid subscription index');
+      return;
+    }
+
+    final url = _subscriptions[subscriptionIndex];
+    _log('Fetching subscription data from: $url');
+
+    try {
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode != 200) {
+        _log('Failed to fetch subscription: HTTP ${response.statusCode}');
+        return;
+      }
+
+      final content = response.body.trim();
+
+      List<String> servers = [];
+
+      if (content.startsWith('[')) {
+        final jsonList = jsonDecode(content) as List<dynamic>;
+        for (var server in jsonList) {
+          servers.add(server.toString());
+        }
+        _log('Parsed JSON subscription: ${servers.length} servers loaded');
+      } else {
+        servers =
+            content
+                .split('\n')
+                .where((line) => line.trim().isNotEmpty)
+                .toList();
+        _log('Parsed NEWLINE subscription: ${servers.length} servers loaded');
+      }
+
+      while (_servers.length <= subscriptionIndex) {
+        _servers.add([]);
+      }
+
+      _servers[subscriptionIndex] = servers;
+      _subscriptionLoadedSubject.add(SubscriptionDetails());
+
+      _log('Subscription #$subscriptionIndex servers updated successfully');
+    } catch (e) {
+      _log('Error updating subscription: $e');
+      _emitError(ErrorCode.unknownError, 'Error updating subscription: $e');
+    }
+  }
 
   @override
   Future<void> connect({
@@ -238,14 +286,15 @@ class V2RayCore implements VpnCore {
     required int serverIndex,
   }) async {
     try {
+      // Changed terminology from subscription to server group
       if (subscriptionIndex < 0 ||
           subscriptionIndex >= _servers.length) {
-        _log('Invalid server group index: $subscriptionIndex');
+        _log('Invalid server group index');
         return;
       }
       if (serverIndex < 0 ||
           serverIndex >= _servers[subscriptionIndex].length) {
-        _log('Invalid server index: $serverIndex');
+        _log('Invalid server index');
         return;
       }
 
@@ -296,8 +345,8 @@ class V2RayCore implements VpnCore {
   void pingServer({required int subscriptionIndex, required int index}) async {
     if (subscriptionIndex < 0 ||
         subscriptionIndex >= _servers.length) {
-      _log('Invalid server group index: $subscriptionIndex');
-      _emitError(ErrorCode.unknownError, 'Invalid server group index');
+      _log('Invalid subscription index');
+      _emitError(ErrorCode.unknownError, 'Invalid subscription index');
       return;
     }
     if (index < 0 || index >= _servers[subscriptionIndex].length) {
@@ -321,7 +370,7 @@ class V2RayCore implements VpnCore {
         );
         _pingResultSubject.add(result);
         _log(
-          'Ping result: group=${result.groupIndex}, server=${result.serverIndex}, latency=${result.latencyInMs} ms',
+          'Ping result: sub=${result.subscriptionIndex}, server=${result.serverIndex}, latency=${result.latencyInMs} ms',
         );
       } else {
         _log('Ping failed: No response');
@@ -384,7 +433,7 @@ class V2RayCore implements VpnCore {
   Future<void> loadSubscriptions({
     required List<String> subscriptionLinks,
   }) async {
-    _log('Loading VLESS keys: ${subscriptionLinks.join(", ")}');
+    _log('loadSubscriptions: ${subscriptionLinks.join(", ")}');
     
     List<String> servers = subscriptionLinks.where((key) => key.trim().isNotEmpty).toList();
     
@@ -393,7 +442,7 @@ class V2RayCore implements VpnCore {
         _servers.add([]);
       }
       _servers[0] = servers;
-      _serversLoadedSubject.add(SubscriptionDetails());
+      _subscriptionLoadedSubject.add(SubscriptionDetails());
       _log('Direct VLESS keys loaded: ${servers.length}');
     }
   }
