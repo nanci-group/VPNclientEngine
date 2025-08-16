@@ -6,49 +6,8 @@ import 'package:dart_ping/dart_ping.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:flutter/services.dart';
 
-// Conditionally import flutter_v2ray
-// This prevents compilation errors on platforms where it's not supported
-// ignore: uri_does_not_exist
-import 'package:flutter_v2ray/flutter_v2ray.dart' if (dart.library.js) 'dart:core';
-
-// Create stub classes for when FlutterV2ray is not available (Windows)
-class FlutterV2ray {
-  final Function(dynamic)? onStatusChanged;
-  
-  FlutterV2ray({this.onStatusChanged});
-  
-  Future<bool> initializeV2Ray() async => true;
-  Future<bool> requestPermission() async => true;
-  
-  void startV2Ray({
-    required String remark,
-    required String config,
-    dynamic blockedApps,
-    dynamic bypassSubnets,
-    required bool proxyOnly,
-  }) {
-    // Stub implementation
-  }
-  
-  void stopV2Ray() {
-    // Stub implementation
-  }
-  
-  static V2RayURL parseFromURL(String url) {
-    return V2RayURL(remark: 'Windows Config', config: '{}');
-  }
-}
-
-class V2RayURL {
-  final String remark;
-  final String config;
-  
-  V2RayURL({required this.remark, required this.config});
-  
-  String getFullConfiguration() {
-    return config;
-  }
-}
+// Platform-specific imports
+import 'platform_imports.dart';
 
 // Simple logger for production code
 void _log(String message) {
@@ -253,7 +212,7 @@ class Ping {
 class V2RayCore implements VpnCore {
   // Platform-specific VPN implementation
   final bool _isWindows = Platform.isWindows;
-  dynamic _vpnImplementation;
+  VpnImplementation? _vpnImplementation;
   
   // Method channel for platform communication
   static const MethodChannel _methodChannel = MethodChannel('vpnclient_engine_flutter');
@@ -290,22 +249,24 @@ class V2RayCore implements VpnCore {
   }
 
   void initialize() {
-    if (_isWindows) {
-      _log('V2RayCore initialized for Windows using SingBox');
-      // Windows-specific initialization will happen on connect
-    } else {
-      try {
-        // Mobile platforms use FlutterV2ray
-        _vpnImplementation = FlutterV2ray(
-          onStatusChanged: (status) {
-            // Handle status changes
-            _log('V2Ray status changed: $status');
-          },
-        );
+    try {
+      // Get the appropriate implementation for the current platform
+      _vpnImplementation = PlatformImplementation.getImplementation(
+        onStatusChanged: (status) {
+          // Handle status changes
+          _log('VPN status changed: $status');
+        },
+      );
+      
+      if (_vpnImplementation == null) {
+        _log('No VPN implementation available for this platform');
+      } else if (_isWindows) {
+        _log('V2RayCore initialized for Windows using SingBox');
+      } else {
         _log('V2RayCore initialized for mobile');
-      } catch (e) {
-        _log('Error initializing V2Ray: $e');
       }
+    } catch (e) {
+      _log('Error initializing VPN implementation: $e');
     }
   }
 
@@ -378,6 +339,12 @@ class V2RayCore implements VpnCore {
     int port = 443; // Default port
     String uuid = '';
     String sni = '';
+    bool tls = true;
+    String network = "tcp";
+    String security = "tls";
+    Map<String, dynamic> wsSettings = {};
+    
+    _log('Generating SingBox config for key: $vlessKey');
     
     try {
       // Handle vless:// format URLs
@@ -401,12 +368,31 @@ class V2RayCore implements VpnCore {
             if (questionMarkIndex != -1) {
               port = int.tryParse(portPart.substring(0, questionMarkIndex)) ?? 443;
               
-              // Check if sni is specified in the query parameters
-              if (portPart.contains('sni=')) {
-                int sniIndex = portPart.indexOf('sni=');
-                String sniPart = portPart.substring(sniIndex + 4);
-                int andIndex = sniPart.indexOf('&');
-                sni = andIndex != -1 ? sniPart.substring(0, andIndex) : sniPart;
+              // Parse query parameters
+              String queryParams = portPart.substring(questionMarkIndex + 1);
+              Map<String, String> params = {};
+              
+              // Split by &
+              List<String> paramPairs = queryParams.split('&');
+              for (String pair in paramPairs) {
+                List<String> keyValue = pair.split('=');
+                if (keyValue.length == 2) {
+                  params[keyValue[0]] = keyValue[1];
+                }
+              }
+              
+              // Extract common parameters
+              sni = params['sni'] ?? host;
+              security = params['security'] ?? 'tls';
+              tls = security == 'tls' || security == 'xtls';
+              network = params['type'] ?? 'tcp';
+              
+              // Handle websocket settings
+              if (network == 'ws') {
+                wsSettings['path'] = params['path'] ?? '/';
+                if (params.containsKey('host')) {
+                  wsSettings['headers'] = {'Host': params['host']};
+                }
               }
             } else {
               port = int.tryParse(portPart) ?? 443;
@@ -421,41 +407,59 @@ class V2RayCore implements VpnCore {
         host = uri.host;
         port = uri.port > 0 ? uri.port : 443;
         uuid = uri.userInfo;
+        sni = host;
       }
     } catch (e) {
       _log('Error parsing VLESS key: $e');
       // Provide default values in case of parsing error
       host = 'example.com';
       uuid = '00000000-0000-0000-0000-000000000000';
+      sni = host;
     }
     
-    // Use SNI if provided, otherwise use host
-    sni = sni.isNotEmpty ? sni : host;
+    _log('Parsed VLESS key - Host: $host, Port: $port, UUID: $uuid, SNI: $sni, Network: $network');
     
-    _log('Parsed VLESS key - Host: $host, Port: $port, UUID: $uuid, SNI: $sni');
+    // Create the outbound configuration based on protocol details
+    Map<String, dynamic> outbound = {
+      "type": "vless",
+      "tag": "vless-out",
+      "server": host,
+      "server_port": port,
+      "uuid": uuid,
+      "flow": "",
+    };
+    
+    // Add TLS configuration if needed
+    if (tls) {
+      outbound["tls"] = {
+        "enabled": true,
+        "server_name": sni,
+        "insecure": false
+      };
+    }
+    
+    // Add transport settings based on network type
+    if (network == "ws") {
+      outbound["transport"] = {
+        "type": "ws",
+        "path": wsSettings['path'] ?? "/",
+      };
+      
+      if (wsSettings.containsKey('headers')) {
+        outbound["transport"]["headers"] = wsSettings['headers'];
+      }
+    }
     
     // Create a basic SingBox configuration
     Map<String, dynamic> config = {
       "log": {"level": "info"},
       "inbounds": [{
-        "type": "socks",
-        "tag": "socks-in",
+        "type": "mixed",
+        "tag": "mixed-in",
         "listen": "127.0.0.1",
         "listen_port": 1080
       }],
-      "outbounds": [{
-        "type": "vless",
-        "tag": "vless-out",
-        "server": host,
-        "server_port": port,
-        "uuid": uuid,
-        "flow": "",
-        "tls": {
-          "enabled": true,
-          "server_name": sni,
-          "insecure": false
-        }
-      }]
+      "outbounds": [outbound]
     };
     
     // Create a temporary config file
@@ -494,6 +498,11 @@ class V2RayCore implements VpnCore {
       final serverAddress = _servers[subscriptionIndex][serverIndex];
       _connectionStatusSubject.add(ConnectionStatus.connecting);
       
+      // Check if we have a valid implementation
+      if (_vpnImplementation == null) {
+        throw Exception('No VPN implementation available for this platform');
+      }
+      
       if (_isWindows) {
         // Windows implementation using SingBox
         _configPath = _generateSingBoxConfig(serverAddress);
@@ -513,21 +522,27 @@ class V2RayCore implements VpnCore {
           throw Exception('Failed to start SingBox');
         }
       } else {
-        // Mobile implementation using FlutterV2ray
-        await (_vpnImplementation as FlutterV2ray).initializeV2Ray();
-        V2RayURL parser = FlutterV2ray.parseFromURL(serverAddress);
+        // Mobile implementation using platform-agnostic approach
+        await _vpnImplementation!.initialize();
         
-        if (await (_vpnImplementation as FlutterV2ray).requestPermission()) {
-          (_vpnImplementation as FlutterV2ray).startV2Ray(
-            remark: parser.remark,
-            config: parser.getFullConfiguration(),
+        if (await _vpnImplementation!.requestPermission()) {
+          final configData = await _vpnImplementation!.parseConfigFromURL(serverAddress);
+          
+          bool success = await _vpnImplementation!.startVpn(
+            serverConfig: serverAddress,
+            remark: configData['remark'] as String?,
             blockedApps: null,
             bypassSubnets: null,
             proxyOnly: false,
           );
-          _serverSwitchedSubject.add(serverAddress);
-          _connectionStatusSubject.add(ConnectionStatus.connected);
-          _log('Successfully connected using V2Ray');
+          
+          if (success) {
+            _serverSwitchedSubject.add(serverAddress);
+            _connectionStatusSubject.add(ConnectionStatus.connected);
+            _log('Successfully connected using platform VPN');
+          } else {
+            throw Exception('Failed to start VPN');
+          }
         }
       }
     } catch (e) {
@@ -547,11 +562,15 @@ class V2RayCore implements VpnCore {
       } catch (e) {
         _log('Error stopping SingBox: $e');
       }
-    } else {
-      // Mobile implementation using FlutterV2ray
-      (_vpnImplementation as FlutterV2ray).stopV2Ray();
-      _connectionStatusSubject.add(ConnectionStatus.disconnected);
-      _log('Disconnected V2Ray successfully');
+    } else if (_vpnImplementation != null) {
+      // Mobile implementation using platform-agnostic approach
+      bool success = await _vpnImplementation!.stopVpn();
+      if (success) {
+        _connectionStatusSubject.add(ConnectionStatus.disconnected);
+        _log('Disconnected VPN successfully');
+      } else {
+        _log('Error stopping VPN');
+      }
     }
   }
 
