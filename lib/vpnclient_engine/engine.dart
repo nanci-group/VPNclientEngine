@@ -16,9 +16,18 @@ void _log(String message) {
 }
 
 class VPNclientEngine {
+  static String _lastAddedKey = "";
+
   static void addVlessKeyDirect(String vlessKey) {
-    // Добавляем новый список серверов с одним vless-ключом
+    // Clear previous servers and add only the new vless key
+    _servers.clear();
     _servers.add([vlessKey]);
+    _lastAddedKey = vlessKey;
+    
+    // Initialize V2Ray core and pass the key to it
+    _vpnCore = V2RayCore();
+    (_vpnCore as V2RayCore).addVlessKeyDirect(vlessKey);
+    
     _log('Direct vless key added: $vlessKey');
   }
   static final List<List<String>> _servers = [];
@@ -67,34 +76,41 @@ class VPNclientEngine {
   }
 
   static Future<void> connect({
-    required int subscriptionIndex,
-    required int serverIndex,
+    int? subscriptionIndex,
+    int? serverIndex,
     ProxyConfig? proxyConfig,
   }) async {
-    final url = _servers[subscriptionIndex][serverIndex];
-
-    if (url.startsWith('vless://') ||
-        url.startsWith('vmess://') ||
-        url.startsWith('v2ray://')) {
-      _vpnCore = V2RayCore();
-    } else if (url.startsWith('wg://')) {
-      _vpnCore = WireGuardCore();
-    } else if (url.startsWith('openvpn://') || url.endsWith('.ovpn')) {
-      _vpnCore = OpenVPNCore();
-    } else {
-      _emitError(ErrorCode.unknownError, 'Unsupported URL format');
+    // For direct connection without specifying indices
+    if (subscriptionIndex == null || serverIndex == null) {
+      // We simply use the first server (which should be our vless key)
+      _connectionStatusSubject.add(ConnectionStatus.connecting);
+      try {
+        await _vpnCore.connect(
+          subscriptionIndex: 0,
+          serverIndex: 0,
+        );
+        _connectionStatusSubject.add(ConnectionStatus.connected);
+      } catch (e) {
+        _log('Connection error: $e');
+        _connectionStatusSubject.add(ConnectionStatus.error);
+        _emitError(ErrorCode.unknownError, 'Connection error: $e');
+      }
       return;
     }
-    if (serverIndex < 0 ||
-        serverIndex >= _servers[subscriptionIndex].length) {
-      _emitError(ErrorCode.unknownError, 'Invalid server index');
-      return;
+    
+    // This is the standard connection with specified indices
+    _connectionStatusSubject.add(ConnectionStatus.connecting);
+    try {
+      await _vpnCore.connect(
+        subscriptionIndex: subscriptionIndex,
+        serverIndex: serverIndex,
+      );
+      _connectionStatusSubject.add(ConnectionStatus.connected);
+    } catch (e) {
+      _log('Connection error: $e');
+      _connectionStatusSubject.add(ConnectionStatus.error);
+      _emitError(ErrorCode.unknownError, 'Connection error: $e');
     }
-
-    await _vpnCore.connect(
-      subscriptionIndex: subscriptionIndex,
-      serverIndex: serverIndex,
-    );
   }
 
   static Future<void> disconnect() async {

@@ -159,6 +159,7 @@ class WireGuardCore implements VpnCore {
 }
 
 abstract class VpnCore {
+  // Made indices required but simplified how they're used internally
   Future<void> connect({
     required int subscriptionIndex,
     required int serverIndex,
@@ -225,7 +226,8 @@ class V2RayCore implements VpnCore {
   }
 
   void addVlessKeyDirect(String vlessKey) {
-    // Add a new server list with a single vless key
+    // Clear existing servers and add the vless key as the only server
+    _servers.clear();
     _servers.add([vlessKey]);
     _log('Direct vless key added to V2RayCore: $vlessKey');
   }
@@ -286,12 +288,11 @@ class V2RayCore implements VpnCore {
     required int serverIndex,
   }) async {
     try {
-      // Changed terminology from subscription to server group
-      if (subscriptionIndex < 0 ||
-          subscriptionIndex >= _servers.length) {
-        _log('Invalid server group index');
-        return;
+      // Ensure _servers has enough entries
+      while (_servers.length <= subscriptionIndex) {
+        _servers.add([]);
       }
+      
       if (serverIndex < 0 ||
           serverIndex >= _servers[subscriptionIndex].length) {
         _log('Invalid server index');
@@ -343,12 +344,11 @@ class V2RayCore implements VpnCore {
 
   @override
   void pingServer({required int subscriptionIndex, required int index}) async {
-    if (subscriptionIndex < 0 ||
-        subscriptionIndex >= _servers.length) {
-      _log('Invalid subscription index');
-      _emitError(ErrorCode.unknownError, 'Invalid subscription index');
-      return;
+    // Ensure _servers has enough entries
+    while (_servers.length <= subscriptionIndex) {
+      _servers.add([]);
     }
+    
     if (index < 0 || index >= _servers[subscriptionIndex].length) {
       _log('Invalid server index');
       _emitError(ErrorCode.unknownError, 'Invalid server index');
@@ -433,15 +433,14 @@ class V2RayCore implements VpnCore {
   Future<void> loadSubscriptions({
     required List<String> subscriptionLinks,
   }) async {
-    _log('loadSubscriptions: ${subscriptionLinks.join(", ")}');
+    _log('Loading vless keys: ${subscriptionLinks.join(", ")}');
     
     List<String> servers = subscriptionLinks.where((key) => key.trim().isNotEmpty).toList();
     
     if (servers.isNotEmpty) {
-      while (_servers.length <= 0) {
-        _servers.add([]);
-      }
-      _servers[0] = servers;
+      // Clear existing servers and add new ones directly
+      _servers.clear();
+      _servers.add(servers);
       _subscriptionLoadedSubject.add(SubscriptionDetails());
       _log('Direct VLESS keys loaded: ${servers.length}');
     }
