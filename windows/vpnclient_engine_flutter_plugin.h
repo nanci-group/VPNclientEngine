@@ -24,6 +24,10 @@ class VpnclientEngineFlutterPlugin : public flutter::Plugin {
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+      
+ private:
+  // SingBox related methods
+  bool startSingBox(std::string configPath);
 };
 
 }  // namespace vpnclient_engine_flutter

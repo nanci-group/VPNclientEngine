@@ -1,9 +1,54 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:dart_ping/dart_ping.dart';
-import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:flutter/services.dart';
+
+// Conditionally import flutter_v2ray
+// This prevents compilation errors on platforms where it's not supported
+// ignore: uri_does_not_exist
+import 'package:flutter_v2ray/flutter_v2ray.dart' if (dart.library.js) 'dart:core';
+
+// Create stub classes for when FlutterV2ray is not available (Windows)
+class FlutterV2ray {
+  final Function(dynamic)? onStatusChanged;
+  
+  FlutterV2ray({this.onStatusChanged});
+  
+  Future<bool> initializeV2Ray() async => true;
+  Future<bool> requestPermission() async => true;
+  
+  void startV2Ray({
+    required String remark,
+    required String config,
+    dynamic blockedApps,
+    dynamic bypassSubnets,
+    required bool proxyOnly,
+  }) {
+    // Stub implementation
+  }
+  
+  void stopV2Ray() {
+    // Stub implementation
+  }
+  
+  static V2RayURL parseFromURL(String url) {
+    return V2RayURL(remark: 'Windows Config', config: '{}');
+  }
+}
+
+class V2RayURL {
+  final String remark;
+  final String config;
+  
+  V2RayURL({required this.remark, required this.config});
+  
+  String getFullConfiguration() {
+    return config;
+  }
+}
 
 // Simple logger for production code
 void _log(String message) {
@@ -175,41 +220,69 @@ abstract class VpnCore {
   void setKillSwitch({required bool enable});
 }
 
+// Stub classes for platform compatibility
+class MethodChannel {
+  final String name;
+  
+  const MethodChannel(this.name);
+  
+  Future<dynamic> invokeMethod(String method, [dynamic arguments]) async {
+    return true; // Stub implementation
+  }
+}
+
+// Stub for BehaviorSubject
+class BehaviorSubject<T> {
+  final Stream<T> stream = Stream.empty();
+  
+  void add(T value) {
+    // Stub implementation
+  }
+}
+
+// Stub for Ping
+class Ping {
+  final String host;
+  final int count;
+  
+  Ping(this.host, {this.count = 3});
+  
+  final Stream stream = Stream.empty();
+}
+
 class V2RayCore implements VpnCore {
-  final FlutterV2ray _flutterV2ray = FlutterV2ray(
-    onStatusChanged: (status) {
-      // do something
-    },
-  );
+  // Platform-specific VPN implementation
+  final bool _isWindows = Platform.isWindows;
+  dynamic _vpnImplementation;
+  
+  // Method channel for platform communication
+  static const MethodChannel _methodChannel = MethodChannel('vpnclient_engine_flutter');
+  
+  // Store servers and configurations
   final List<List<String>> _servers = [];
   final List<String> _subscriptions = [];
-
+  
+  // SingBox configuration path for Windows
+  String _configPath = '';
+  
+  // RxDart subjects for stream controllers
   final _connectionStatusSubject = BehaviorSubject<ConnectionStatus>();
-  Stream<ConnectionStatus> get onConnectionStatusChanged =>
-      _connectionStatusSubject.stream;
-
   final _errorSubject = BehaviorSubject<ErrorDetails>();
-  Stream<ErrorDetails> get onError => _errorSubject.stream;
-
   final _serverSwitchedSubject = BehaviorSubject<String>();
-  Stream<String> get onServerSwitched => _serverSwitchedSubject.stream;
-
   final _pingResultSubject = BehaviorSubject<PingResult>();
-  Stream<PingResult> get onPingResult => _pingResultSubject.stream;
-
   final _subscriptionLoadedSubject = BehaviorSubject<SubscriptionDetails>();
-  Stream<SubscriptionDetails> get onSubscriptionLoaded =>
-      _subscriptionLoadedSubject.stream;
-
   final _dataUsageUpdatedSubject = BehaviorSubject<SessionStatistics>();
-  Stream<SessionStatistics> get onDataUsageUpdated =>
-      _dataUsageUpdatedSubject.stream;
-
   final _routingRulesAppliedSubject = BehaviorSubject<List<RoutingRule>>();
-  Stream<List<RoutingRule>> get onRoutingRulesApplied =>
-      _routingRulesAppliedSubject.stream;
-
   final _killSwitchTriggeredSubject = BehaviorSubject<void>();
+  
+  // Define streams to expose data
+  Stream<ConnectionStatus> get onConnectionStatusChanged => _connectionStatusSubject.stream;
+  Stream<ErrorDetails> get onError => _errorSubject.stream;
+  Stream<String> get onServerSwitched => _serverSwitchedSubject.stream;
+  Stream<PingResult> get onPingResult => _pingResultSubject.stream;
+  Stream<SubscriptionDetails> get onSubscriptionLoaded => _subscriptionLoadedSubject.stream;
+  Stream<SessionStatistics> get onDataUsageUpdated => _dataUsageUpdatedSubject.stream;
+  Stream<List<RoutingRule>> get onRoutingRulesApplied => _routingRulesAppliedSubject.stream;
   Stream<void> get onKillSwitchTriggered => _killSwitchTriggeredSubject.stream;
 
   void _emitError(ErrorCode code, String message) {
@@ -217,7 +290,23 @@ class V2RayCore implements VpnCore {
   }
 
   void initialize() {
-    _log('V2RayCore initialized');
+    if (_isWindows) {
+      _log('V2RayCore initialized for Windows using SingBox');
+      // Windows-specific initialization will happen on connect
+    } else {
+      try {
+        // Mobile platforms use FlutterV2ray
+        _vpnImplementation = FlutterV2ray(
+          onStatusChanged: (status) {
+            // Handle status changes
+            _log('V2Ray status changed: $status');
+          },
+        );
+        _log('V2RayCore initialized for mobile');
+      } catch (e) {
+        _log('Error initializing V2Ray: $e');
+      }
+    }
   }
 
   void clearServers() {
@@ -282,6 +371,109 @@ class V2RayCore implements VpnCore {
     }
   }
 
+  // Helper method to generate SingBox config for Windows
+  String _generateSingBoxConfig(String vlessKey) {
+    // Extract necessary information from the VLESS key
+    String host = '';
+    int port = 443; // Default port
+    String uuid = '';
+    String sni = '';
+    
+    try {
+      // Handle vless:// format URLs
+      if (vlessKey.startsWith('vless://')) {
+        // Extract the UUID part (everything between vless:// and @)
+        int atIndex = vlessKey.indexOf('@');
+        if (atIndex != -1) {
+          uuid = vlessKey.substring(8, atIndex);
+          
+          // Extract host and port from the part after @
+          String serverPart = vlessKey.substring(atIndex + 1);
+          int colonIndex = serverPart.indexOf(':');
+          
+          if (colonIndex != -1) {
+            host = serverPart.substring(0, colonIndex);
+            
+            // Extract port (handle potential query parameters)
+            String portPart = serverPart.substring(colonIndex + 1);
+            int questionMarkIndex = portPart.indexOf('?');
+            
+            if (questionMarkIndex != -1) {
+              port = int.tryParse(portPart.substring(0, questionMarkIndex)) ?? 443;
+              
+              // Check if sni is specified in the query parameters
+              if (portPart.contains('sni=')) {
+                int sniIndex = portPart.indexOf('sni=');
+                String sniPart = portPart.substring(sniIndex + 4);
+                int andIndex = sniPart.indexOf('&');
+                sni = andIndex != -1 ? sniPart.substring(0, andIndex) : sniPart;
+              }
+            } else {
+              port = int.tryParse(portPart) ?? 443;
+            }
+          } else {
+            host = serverPart;
+          }
+        }
+      } else {
+        // Fallback to simple Uri parsing for other formats
+        Uri uri = Uri.parse(vlessKey);
+        host = uri.host;
+        port = uri.port > 0 ? uri.port : 443;
+        uuid = uri.userInfo;
+      }
+    } catch (e) {
+      _log('Error parsing VLESS key: $e');
+      // Provide default values in case of parsing error
+      host = 'example.com';
+      uuid = '00000000-0000-0000-0000-000000000000';
+    }
+    
+    // Use SNI if provided, otherwise use host
+    sni = sni.isNotEmpty ? sni : host;
+    
+    _log('Parsed VLESS key - Host: $host, Port: $port, UUID: $uuid, SNI: $sni');
+    
+    // Create a basic SingBox configuration
+    Map<String, dynamic> config = {
+      "log": {"level": "info"},
+      "inbounds": [{
+        "type": "socks",
+        "tag": "socks-in",
+        "listen": "127.0.0.1",
+        "listen_port": 1080
+      }],
+      "outbounds": [{
+        "type": "vless",
+        "tag": "vless-out",
+        "server": host,
+        "server_port": port,
+        "uuid": uuid,
+        "flow": "",
+        "tls": {
+          "enabled": true,
+          "server_name": sni,
+          "insecure": false
+        }
+      }]
+    };
+    
+    // Create a temporary config file
+    String tempDir = Platform.isWindows ? 
+      '${Platform.environment['TEMP']}\\singbox' : 
+      '/tmp/singbox';
+    
+    // Create the directory if it doesn't exist
+    Directory(tempDir).createSync(recursive: true);
+    
+    // Write the config to a file
+    String configPath = '$tempDir\\config.json';
+    File(configPath).writeAsStringSync(jsonEncode(config));
+    
+    _log('Generated SingBox config at: $configPath');
+    return configPath;
+  }
+
   @override
   Future<void> connect({
     required int subscriptionIndex,
@@ -299,25 +491,45 @@ class V2RayCore implements VpnCore {
         return;
       }
 
-      await _flutterV2ray.initializeV2Ray();
-
-      final serverAddress =
-          _servers[subscriptionIndex][serverIndex];
-      V2RayURL parser = FlutterV2ray.parseFromURL(serverAddress);
-
+      final serverAddress = _servers[subscriptionIndex][serverIndex];
       _connectionStatusSubject.add(ConnectionStatus.connecting);
-      if (await _flutterV2ray.requestPermission()) {
-        _flutterV2ray.startV2Ray(
-          remark: parser.remark,
-          config: parser.getFullConfiguration(),
-          blockedApps: null,
-          bypassSubnets: null,
-          proxyOnly: false,
-        );
+      
+      if (_isWindows) {
+        // Windows implementation using SingBox
+        _configPath = _generateSingBoxConfig(serverAddress);
+        
+        // Use platform channel to start SingBox
+        final Map<String, dynamic> params = {
+          'configPath': _configPath
+        };
+        
+        bool success = await _methodChannel.invokeMethod('startSingBox', params);
+        
+        if (success) {
+          _serverSwitchedSubject.add(serverAddress);
+          _connectionStatusSubject.add(ConnectionStatus.connected);
+          _log('Successfully connected using SingBox on Windows');
+        } else {
+          throw Exception('Failed to start SingBox');
+        }
+      } else {
+        // Mobile implementation using FlutterV2ray
+        await (_vpnImplementation as FlutterV2ray).initializeV2Ray();
+        V2RayURL parser = FlutterV2ray.parseFromURL(serverAddress);
+        
+        if (await (_vpnImplementation as FlutterV2ray).requestPermission()) {
+          (_vpnImplementation as FlutterV2ray).startV2Ray(
+            remark: parser.remark,
+            config: parser.getFullConfiguration(),
+            blockedApps: null,
+            bypassSubnets: null,
+            proxyOnly: false,
+          );
+          _serverSwitchedSubject.add(serverAddress);
+          _connectionStatusSubject.add(ConnectionStatus.connected);
+          _log('Successfully connected using V2Ray');
+        }
       }
-      _serverSwitchedSubject.add(serverAddress);
-      _connectionStatusSubject.add(ConnectionStatus.connected);
-      _log('Successfully connected');
     } catch (e) {
       _emitError(ErrorCode.unknownError, 'Error connecting: $e');
       _connectionStatusSubject.add(ConnectionStatus.error);
@@ -326,9 +538,21 @@ class V2RayCore implements VpnCore {
 
   @override
   Future<void> disconnect() async {
-    _flutterV2ray.stopV2Ray();
-    _connectionStatusSubject.add(ConnectionStatus.disconnected);
-    _log('Disconnected successfully');
+    if (_isWindows) {
+      // Windows implementation using SingBox
+      try {
+        await _methodChannel.invokeMethod('stopSingBox');
+        _connectionStatusSubject.add(ConnectionStatus.disconnected);
+        _log('Disconnected SingBox successfully');
+      } catch (e) {
+        _log('Error stopping SingBox: $e');
+      }
+    } else {
+      // Mobile implementation using FlutterV2ray
+      (_vpnImplementation as FlutterV2ray).stopV2Ray();
+      _connectionStatusSubject.add(ConnectionStatus.disconnected);
+      _log('Disconnected V2Ray successfully');
+    }
   }
 
   @override

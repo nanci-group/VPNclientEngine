@@ -54,14 +54,35 @@ bool VpnclientEngineFlutterPlugin::startSingBox(std::string configPath) {
     return false;
   }
   configFile.close();
-
-  // Here you would typically use system() or CreateProcess()
-  // to launch the sing-box executable with the specified configuration.
-  // For this example, we'll just simulate launching it.
   
-  std::string command = "sing-box run -c \"" + configPath + "\"";
+  // First, check if SingBox is already running and terminate it
+  system("taskkill /F /IM sing-box.exe 2>NUL");
+  
+  // Try to find sing-box in the application directory first
+  std::string exePath = "sing-box.exe";
+  std::string applicationDir = "";
+  
+  // Get the application directory
+  char buffer[MAX_PATH];
+  GetModuleFileNameA(NULL, buffer, MAX_PATH);
+  std::string::size_type pos = std::string(buffer).find_last_of("\\/");
+  if (pos != std::string::npos) {
+    applicationDir = std::string(buffer).substr(0, pos);
+    
+    // Check if sing-box exists in the application directory
+    std::string localExePath = applicationDir + "\\sing-box.exe";
+    std::ifstream exeFile(localExePath);
+    if (exeFile.good()) {
+      exePath = localExePath;
+      exeFile.close();
+    }
+  }
+  
+  // Build the command to run sing-box with the configuration file
+  std::string command = "\"" + exePath + "\" run -c \"" + configPath + "\"";
   std::cout << "Executing command: " << command << std::endl;
 
+  // Use CREATE_NO_WINDOW to hide the console window
   STARTUPINFOA startupInfo;
   PROCESS_INFORMATION processInfo;
 
@@ -69,17 +90,23 @@ bool VpnclientEngineFlutterPlugin::startSingBox(std::string configPath) {
   startupInfo.cb = sizeof(startupInfo);
   ZeroMemory(&processInfo, sizeof(processInfo));
 
-  if (CreateProcessA(NULL, (LPSTR)command.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &startupInfo, &processInfo)) {
-      CloseHandle(processInfo.hProcess);
+  if (CreateProcessA(NULL, (LPSTR)command.c_str(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startupInfo, &processInfo)) {
+      // Keep process handle for later termination but close the thread handle
       CloseHandle(processInfo.hThread);
       std::cout << "sing-box launched successfully." << std::endl;
       return true;
   } else {
-      std::cerr << "Failed to start sing-box. Error code: " << GetLastError() << std::endl;
+      DWORD error = GetLastError();
+      std::cerr << "Failed to start sing-box. Error code: " << error << std::endl;
+      
+      // If the error is file not found, try to find sing-box in PATH
+      if (error == ERROR_FILE_NOT_FOUND) {
+          std::cerr << "sing-box.exe not found in application directory. " 
+                    << "Make sure sing-box.exe is in your PATH or in the same directory as your application." << std::endl;
+      }
+      
       return false;
   }
-
-  return false; 
 }
 
 VpnclientEngineFlutterPlugin::~VpnclientEngineFlutterPlugin() {}
@@ -109,6 +136,11 @@ void VpnclientEngineFlutterPlugin::HandleMethodCall(
             return;
         }
     }
+    result->Error("INVALID_ARGUMENTS", "Invalid arguments for startSingBox");
+  } else if (method_call.method_name().compare("stopSingBox") == 0) {
+    // Terminate sing-box process
+    system("taskkill /F /IM sing-box.exe");
+    result->Success(flutter::EncodableValue(true));
   } else {
     result->NotImplemented();
   }
