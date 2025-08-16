@@ -97,8 +97,18 @@ class VPNclientEngine {
     final url = _subscriptions[subscriptionIndex];
     _log('Fetching subscription data from: $url');
 
+    // Если это vless-ключ, просто добавляем его как сервер
+    if (url.startsWith('vless://')) {
+      while (_subscriptionServers.length <= subscriptionIndex) {
+        _subscriptionServers.add([]);
+      }
+      _subscriptionServers[subscriptionIndex] = [url];
+      _subscriptionLoadedSubject.add(SubscriptionDetails());
+      _log('Direct vless key processed as server for subscription #$subscriptionIndex');
+      return;
+    }
+
     try {
-      //Сейчас при поднятом VPN обновление подписки пойдет через туннель. Позже необходимо реализовать разные механизмы обновления (только через туннель/только напрямую/комбинированный)
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode != 200) {
@@ -127,12 +137,10 @@ class VPNclientEngine {
         _log('Parsed NEWLINE subscription: ${servers.length} servers loaded');
       }
 
-      // Ensure the servers list matches the subscriptions list size
       while (_subscriptionServers.length <= subscriptionIndex) {
         _subscriptionServers.add([]);
       }
 
-      // Save fetched servers to specific subscription index
       _subscriptionServers[subscriptionIndex] = servers;
       _subscriptionLoadedSubject.add(SubscriptionDetails());
 
