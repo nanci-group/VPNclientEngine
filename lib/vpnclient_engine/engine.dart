@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:dart_ping/dart_ping.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:vpnclient_engine_flutter/vpnclient_engine_flutter.dart';
@@ -20,13 +18,10 @@ void _log(String message) {
 class VPNclientEngine {
   static void addVlessKeyDirect(String vlessKey) {
     // Добавляем новый список серверов с одним vless-ключом
-    _subscriptionServers.add([vlessKey]);
-    _subscriptions.add(vlessKey);
-    _subscriptionLoadedSubject.add(SubscriptionDetails());
+    _servers.add([vlessKey]);
     _log('Direct vless key added: $vlessKey');
   }
-  static final List<List<String>> _subscriptionServers = [];
-  static final List<String> _subscriptions = [];
+  static final List<List<String>> _servers = [];
 
   static final _connectionStatusSubject = BehaviorSubject<ConnectionStatus>();
   static Stream<ConnectionStatus> get onConnectionStatusChanged =>
@@ -71,92 +66,12 @@ class VPNclientEngine {
     _vpnCore = V2RayCore();
   }
 
-  static void clearSubscriptions() {
-    _subscriptions.clear();
-    _log('All subscriptions cleared');
-  }
-
-  static void addSubscriptionKey({required String key}) {
-    _subscriptions.add(key);
-    _log('Subscription key added: $key');
-  }
-
-  static void addSubscriptions({required List<String> subscriptionURLs}) {
-    _subscriptions.addAll(subscriptionURLs);
-    _log('Subscriptions added: ${subscriptionURLs.join(", ")}');
-  }
-
-  static Future<void> updateSubscription({
-    required int subscriptionIndex,
-  }) async {
-    if (subscriptionIndex < 0 || subscriptionIndex >= _subscriptions.length) {
-      _log('Invalid subscription index');
-      return;
-    }
-
-    final url = _subscriptions[subscriptionIndex];
-    _log('Fetching subscription data from: $url');
-
-    // Если это vless-ключ, просто добавляем его как сервер
-    if (url.startsWith('vless://')) {
-      while (_subscriptionServers.length <= subscriptionIndex) {
-        _subscriptionServers.add([]);
-      }
-      _subscriptionServers[subscriptionIndex] = [url];
-      _subscriptionLoadedSubject.add(SubscriptionDetails());
-      _log('Direct vless key processed as server for subscription #$subscriptionIndex');
-      return;
-    }
-
-    try {
-      final response = await http.get(Uri.parse(url));
-
-      if (response.statusCode != 200) {
-        _log('Failed to fetch subscription: HTTP ${response.statusCode}');
-        return;
-      }
-
-      final content = response.body.trim();
-
-      List<String> servers = [];
-
-      if (content.startsWith('[')) {
-        // JSON format
-        final jsonList = jsonDecode(content) as List<dynamic>;
-        for (var server in jsonList) {
-          servers.add(server.toString());
-        }
-        _log('Parsed JSON subscription: ${servers.length} servers loaded');
-      } else {
-        // NEWLINE format
-        servers =
-            content
-                .split('\n')
-                .where((line) => line.trim().isNotEmpty)
-                .toList();
-        _log('Parsed NEWLINE subscription: ${servers.length} servers loaded');
-      }
-
-      while (_subscriptionServers.length <= subscriptionIndex) {
-        _subscriptionServers.add([]);
-      }
-
-      _subscriptionServers[subscriptionIndex] = servers;
-      _subscriptionLoadedSubject.add(SubscriptionDetails());
-
-      _log('Subscription #$subscriptionIndex servers updated successfully');
-    } catch (e) {
-      _log('Error updating subscription: $e');
-      _emitError(ErrorCode.unknownError, 'Error updating subscription: $e');
-    }
-  }
-
   static Future<void> connect({
     required int subscriptionIndex,
     required int serverIndex,
     ProxyConfig? proxyConfig,
   }) async {
-    final url = _subscriptionServers[subscriptionIndex][serverIndex];
+    final url = _servers[subscriptionIndex][serverIndex];
 
     if (url.startsWith('vless://') ||
         url.startsWith('vmess://') ||
@@ -171,7 +86,7 @@ class VPNclientEngine {
       return;
     }
     if (serverIndex < 0 ||
-        serverIndex >= _subscriptionServers[subscriptionIndex].length) {
+        serverIndex >= _servers[subscriptionIndex].length) {
       _emitError(ErrorCode.unknownError, 'Invalid server index');
       return;
     }
@@ -201,15 +116,15 @@ class VPNclientEngine {
     required int index,
   }) async {
     if (subscriptionIndex < 0 ||
-        subscriptionIndex >= _subscriptionServers.length) {
+        subscriptionIndex >= _servers.length) {
       _log('Invalid subscription index');
       return;
     }
-    if (index < 0 || index >= _subscriptionServers[subscriptionIndex].length) {
+    if (index < 0 || index >= _servers[subscriptionIndex].length) {
       _log('Invalid server index');
       return;
     }
-    final serverAddress = _subscriptionServers[subscriptionIndex][index];
+    final serverAddress = _servers[subscriptionIndex][index];
     _log('Pinging server: $serverAddress');
 
     try {
@@ -258,14 +173,14 @@ class VPNclientEngine {
   static List<Server> getServerList() {
     List<Server> servers = [];
     
-    _log('getServerList: processing ${_subscriptionServers.length} subscriptions');
+    _log('getServerList: processing ${_servers.length} servers');
     
-    // Convert subscription servers to Server objects
-    for (int subIndex = 0; subIndex < _subscriptionServers.length; subIndex++) {
-      _log('getServerList: subscription $subIndex has ${_subscriptionServers[subIndex].length} servers');
+    // Convert servers to Server objects
+    for (int subIndex = 0; subIndex < _servers.length; subIndex++) {
+      _log('getServerList: server group $subIndex has ${_servers[subIndex].length} servers');
       
-      for (int serverIndex = 0; serverIndex < _subscriptionServers[subIndex].length; serverIndex++) {
-        final serverUrl = _subscriptionServers[subIndex][serverIndex];
+      for (int serverIndex = 0; serverIndex < _servers[subIndex].length; serverIndex++) {
+        final serverUrl = _servers[subIndex][serverIndex];
         _log('getServerList: processing server $serverIndex: $serverUrl');
         
         // Extract server information from URL
@@ -324,18 +239,7 @@ class VPNclientEngine {
     return servers;
   }
 
-  static Future<void> loadSubscriptions({
-    required List<String> subscriptionLinks,
-  }) async {
-    _log('loadSubscriptions: ${subscriptionLinks.join(", ")}');
-    _subscriptions.addAll(subscriptionLinks);
-    for (var element in subscriptionLinks) {
-      addSubscriptionKey(key: element);
-      await updateSubscription(
-        subscriptionIndex: _subscriptions.indexOf(element),
-      );
-    }
-  }
+  // Метод loadSubscriptions удален
 
   static SessionStatistics getSessionStatistics() {
     //TODO:
