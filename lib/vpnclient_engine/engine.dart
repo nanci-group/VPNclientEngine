@@ -69,9 +69,9 @@ class VPNclientEngine {
     _log('All subscriptions cleared');
   }
 
-  static void addSubscription({required String subscriptionURL}) {
-    _subscriptions.add(subscriptionURL);
-    _log('Subscription added: $subscriptionURL');
+  static void addSubscriptionKey({required String key}) {
+    _subscriptions.add(key);
+    _log('Subscription key added: $key');
   }
 
   static void addSubscriptions({required List<String> subscriptionURLs}) {
