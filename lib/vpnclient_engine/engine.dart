@@ -18,6 +18,13 @@ void _log(String message) {
 }
 
 class VPNclientEngine {
+  static void addVlessKeyDirect(String vlessKey) {
+    // Добавляем новый список серверов с одним vless-ключом
+    _subscriptionServers.add([vlessKey]);
+    _subscriptions.add(vlessKey);
+    _subscriptionLoadedSubject.add(SubscriptionDetails());
+    _log('Direct vless key added: $vlessKey');
+  }
   static final List<List<String>> _subscriptionServers = [];
   static final List<String> _subscriptions = [];
 
