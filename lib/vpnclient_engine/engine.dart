@@ -315,7 +315,7 @@ class VPNclientEngine {
     _log('loadSubscriptions: ${subscriptionLinks.join(", ")}');
     _subscriptions.addAll(subscriptionLinks);
     for (var element in subscriptionLinks) {
-      addSubscription(subscriptionURL: element);
+      addSubscriptionKey(key: element);
       await updateSubscription(
         subscriptionIndex: _subscriptions.indexOf(element),
       );
